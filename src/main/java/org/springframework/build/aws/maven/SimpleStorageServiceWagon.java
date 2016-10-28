@@ -51,6 +51,8 @@ public final class SimpleStorageServiceWagon extends AbstractWagon {
 
     private static final String RESOURCE_FORMAT = "%s(.*)";
 
+    private static final int MAX_RETRIES = 5;
+
     private volatile AmazonS3 amazonS3;
 
     private volatile String bucketName;
@@ -174,21 +176,33 @@ public final class SimpleStorageServiceWagon extends AbstractWagon {
 
         mkdirs(key, 0);
 
-        InputStream in = null;
         try {
             ObjectMetadata objectMetadata = new ObjectMetadata();
             objectMetadata.setContentLength(source.length());
             objectMetadata.setContentType(Mimetypes.getInstance().getMimetype(source));
 
-            in = new TransferProgressFileInputStream(source, transferProgress);
+            int retries = 0;
+            while (retries < MAX_RETRIES + 1) {
+                InputStream in = null;
+                try {
 
-            this.amazonS3.putObject(new PutObjectRequest(this.bucketName, key, in, objectMetadata));
+                    in = new TransferProgressFileInputStream(source, transferProgress);
+
+                    this.amazonS3.putObject(new PutObjectRequest(this.bucketName, key, in, objectMetadata));
+                    break;
+                } catch (Exception e) {
+                    if (retries >= MAX_RETRIES) {
+                        throw e;
+                    }
+                } finally {
+                    retries++;
+                    IoUtils.closeQuietly(in);
+                }
+            }
         } catch (AmazonServiceException e) {
             throw new TransferFailedException(String.format("Cannot write file to '%s'", destination), e);
         } catch (FileNotFoundException e) {
             throw new ResourceDoesNotExistException(String.format("Cannot read file from '%s'", source), e);
-        } finally {
-            IoUtils.closeQuietly(in);
         }
     }
 
@@ -230,7 +244,19 @@ public final class SimpleStorageServiceWagon extends AbstractWagon {
             PutObjectRequest putObjectRequest = createDirectoryPutObjectRequest(directory);
 
             try {
-                this.amazonS3.putObject(putObjectRequest);
+                int retries = 0;
+                while (retries < MAX_RETRIES + 1) {
+                    try {
+                        this.amazonS3.putObject(putObjectRequest);
+                        break;
+                    } catch (Exception e) {
+                        if (retries >= MAX_RETRIES) {
+                            throw e;
+                        }
+                    } finally {
+                        retries++;
+                    }
+                }
             } catch (AmazonServiceException e) {
                 throw new TransferFailedException(String.format("Cannot write directory '%s'", directory), e);
             }
